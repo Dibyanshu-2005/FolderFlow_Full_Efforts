@@ -19,8 +19,8 @@ from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
 
-api_key = st.secrets["GOOGLE_API_KEY"]
-genai.configure(api_key=api_key)
+os.environ["GOOGLE_API_KEY"] = "AIzaSyCKhfAvlwzxF0DONzqGWbs6goMvn8iEkwE"
+genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 class DocumentManager:
     def __init__(self, folder_path: str):
