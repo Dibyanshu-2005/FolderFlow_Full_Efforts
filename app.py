@@ -19,7 +19,7 @@ from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
 
-os.environ["GOOGLE_API_KEY"] = "AIzaSyCKhfAvlwzxF0DONzqGWbs6goMvn8iEkwE"
+os.environ["GOOGLE_API_KEY"] = "############## REMOVED BY DIBYANSHU FOR SECURITY PURPOSES #############"
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 
 class DocumentManager:
