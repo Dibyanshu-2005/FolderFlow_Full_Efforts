@@ -1,0 +1,11 @@
+streamlit
+langchain
+langchain-community
+langchain-google-genai
+google-generativeai
+chromadb
+unstructured
+python-docx
+pypdf
+python-pptx
+typing
