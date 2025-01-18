@@ -4,29 +4,13 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
 from pathlib import Path
 import shutil
 import docx2txt
 from pptx import Presentation
-import sqlite3
-
-def check_sqlite_version():
-    """Check if SQLite version meets Chroma requirements"""
-    sqlite_version = sqlite3.sqlite_version_info
-    required_version = (3, 35, 0)
-    
-    if sqlite_version < required_version:
-        st.error(f"""
-        Your system has SQLite version {'.'.join(map(str, sqlite_version))}
-        Chroma requires SQLite ≥ 3.35.0
-        Please upgrade SQLite or use a different environment.
-        Visit https://docs.trychroma.com/troubleshooting#sqlite for more information.
-        """)
-        return False
-    return True
 
 def extract_text_from_pptx(file_path: str) -> str:
     """Manually extract text from PowerPoint files"""
@@ -100,10 +84,6 @@ class DocumentManager:
     def setup_qa_system(self, api_key: str):
         """Initialize the QA system with processed documents"""
         try:
-            # Check SQLite version first
-            if not check_sqlite_version():
-                return False
-
             # Configure API
             os.environ["GOOGLE_API_KEY"] = api_key
             genai.configure(api_key=api_key)
@@ -124,14 +104,14 @@ class DocumentManager:
 
             try:
                 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-                persist_directory = os.path.join(os.path.dirname(self.upload_dir), 'chroma_db')
-                os.makedirs(persist_directory, exist_ok=True)
+                
+                # Create FAISS index directory
+                index_dir = os.path.join(os.path.dirname(self.upload_dir), 'faiss_index')
+                os.makedirs(index_dir, exist_ok=True)
 
-                vectorstore = Chroma.from_documents(
-                    documents=all_chunks,
-                    embedding=embeddings,
-                    persist_directory=persist_directory
-                )
+                # Create and save FAISS index
+                vectorstore = FAISS.from_documents(all_chunks, embeddings)
+                vectorstore.save_local(index_dir)
 
                 self.qa_chain = ConversationalRetrievalChain.from_llm(
                     ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
