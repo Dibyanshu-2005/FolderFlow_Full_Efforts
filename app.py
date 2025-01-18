@@ -47,26 +47,24 @@ class DocumentManager:
         self.processed_files = []
         self.qa_chain = None
         self.chat_history = []
+        self.total_files = 0
+        self.processed_count = 0
 
-    def process_file(self, uploaded_file, progress_bar) -> List[Document]:
+    def process_file(self, uploaded_file) -> List[Document]:
         try:
             original_filename = uploaded_file.name
-            # Create a temporary file
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(original_filename)[1]) as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
                 file_path = tmp_file.name
 
-            # Select appropriate loader and pass original filename
             if original_filename.endswith('.pdf'):
                 loader = PyPDFLoader(file_path)
                 documents = loader.load()
-                # Update metadata with original filename
                 for doc in documents:
                     doc.metadata['source'] = original_filename
             elif original_filename.endswith('.docx'):
                 loader = Docx2txtLoader(file_path)
                 documents = loader.load()
-                # Update metadata with original filename
                 for doc in documents:
                     doc.metadata['source'] = original_filename
             elif original_filename.endswith(('.pptx', '.ppt')):
@@ -74,13 +72,11 @@ class DocumentManager:
                 documents = loader.load()
             else:
                 return []
-
-            progress_bar.progress(0.5)
             
             if documents:
                 chunks = self.text_splitter.split_documents(documents)
                 self.processed_files.append(original_filename)
-                progress_bar.progress(1.0)
+                self.processed_count += 1
                 return chunks
             return []
 
@@ -88,7 +84,6 @@ class DocumentManager:
             st.error(f"Error processing {original_filename}: {str(e)}")
             return []
         finally:
-            # Clean up temporary file
             if 'file_path' in locals():
                 try:
                     os.unlink(file_path)
@@ -98,20 +93,26 @@ class DocumentManager:
     def setup_qa_system(self, uploaded_files):
         try:
             all_chunks = []
-            progress_bars = {file.name: st.progress(0) for file in uploaded_files}
+            self.total_files = len(uploaded_files)
+            self.processed_count = 0
+            
+            progress_bar = st.progress(0)
             status_text = st.empty()
 
             for uploaded_file in uploaded_files:
                 status_text.text(f"Processing {uploaded_file.name}...")
-                chunks = self.process_file(uploaded_file, progress_bars[uploaded_file.name])
+                chunks = self.process_file(uploaded_file)
                 all_chunks.extend(chunks)
+                progress = int((self.processed_count / self.total_files) * 100)
+                progress_bar.progress(progress)
+                status_text.text(f"Processed {self.processed_count} of {self.total_files} files ({progress}%)")
 
             if not all_chunks:
                 st.error("No documents were successfully processed!")
                 return False
 
+            status_text.text("Setting up QA system...")
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-            
             vectorstore = FAISS.from_documents(all_chunks, embeddings)
             
             self.qa_chain = ConversationalRetrievalChain.from_llm(
@@ -119,6 +120,9 @@ class DocumentManager:
                 vectorstore.as_retriever(),
                 return_source_documents=True
             )
+            
+            status_text.text("System ready!")
+            progress_bar.progress(100)
             return True
 
         except Exception as e:
@@ -134,7 +138,6 @@ class DocumentManager:
                 "chat_history": self.chat_history
             })
             
-            # Use the original filenames from metadata
             sources = list({
                 doc.metadata.get('source', 'Unknown source')
                 for doc in result["source_documents"]
@@ -148,23 +151,33 @@ class DocumentManager:
         except Exception as e:
             return {"error": f"Error processing question: {str(e)}"}
 
-# Main function remains the same
-
-def main():
-    st.set_page_config(page_title="Document QA Assistant", page_icon="📚")
-    st.title("Document QA Assistant 🤖")
-
-    # Initialize session state
+def initialize_session_state():
     if 'manager' not in st.session_state:
         st.session_state.manager = None
     if 'system_ready' not in st.session_state:
         st.session_state.system_ready = False
     if 'messages' not in st.session_state:
         st.session_state.messages = []
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = os.getenv('GOOGLE_API_KEY', '')
 
-    # Get API key from environment variable or sidebar
-    api_key = os.getenv('GOOGLE_API_KEY') or st.sidebar.text_input("Enter Google API Key", type="password")
+def main():
+    st.set_page_config(page_title="Document QA Assistant", page_icon="📚")
+    st.title("Document QA Assistant 🤖")
+
+    initialize_session_state()
+
+    # API key input in sidebar with persistence
+    st.sidebar.header("Configuration")
+    api_key = st.sidebar.text_input(
+        "Enter Google API Key",
+        value=st.session_state.api_key,
+        type="password",
+        key="api_key_input"
+    )
+    
     if api_key:
+        st.session_state.api_key = api_key
         os.environ["GOOGLE_API_KEY"] = api_key
         genai.configure(api_key=api_key)
     
@@ -173,26 +186,28 @@ def main():
     uploaded_files = st.sidebar.file_uploader(
         "Upload your documents",
         type=['pdf', 'docx', 'pptx', 'ppt'],
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        help="Upload PDF, Word, or PowerPoint files"
     )
 
-    if uploaded_files and api_key and st.sidebar.button("Process Documents"):
+    if uploaded_files and api_key and st.sidebar.button("Process Documents", type="primary"):
         with st.spinner("Processing documents..."):
             manager = DocumentManager()
             if manager.setup_qa_system(uploaded_files):
                 st.session_state.manager = manager
                 st.session_state.system_ready = True
-                st.sidebar.success("Ready to answer questions!")
+                st.sidebar.success("✅ Documents processed successfully!")
             else:
-                st.sidebar.error("Setup failed. Please try again.")
+                st.sidebar.error("❌ Setup failed. Please try again.")
+
+    # Display processed files in sidebar
+    if st.session_state.system_ready and st.session_state.manager.processed_files:
+        st.sidebar.header("Processed Files")
+        for file in st.session_state.manager.processed_files:
+            st.sidebar.text(f"✓ {file}")
 
     # Chat interface
     if st.session_state.system_ready:
-        if st.session_state.manager.processed_files:
-            with st.expander("Processed Files"):
-                for file in st.session_state.manager.processed_files:
-                    st.text(f"✓ {file}")
-
         # Display chat history
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
@@ -226,7 +241,10 @@ def main():
                             "sources": response["sources"]
                         })
     else:
-        st.info("Upload your documents and provide API key to begin.")
+        st.info("👋 Welcome! Please follow these steps to begin:\n\n"
+                "1. Enter your Google API key in the sidebar\n"
+                "2. Upload your documents\n"
+                "3. Click 'Process Documents' to start")
 
 if __name__ == "__main__":
     main()
