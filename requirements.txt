@@ -8,3 +8,4 @@ docx2txt
 unstructured
 pypdf
 python-pptx
+nltk
