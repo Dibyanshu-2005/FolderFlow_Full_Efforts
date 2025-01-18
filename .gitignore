@@ -22,8 +22,8 @@ wheels/
 
 # Virtual Environment
 venv/
-env/
 ENV/
+env/
 .env
 
 # IDE
@@ -32,11 +32,16 @@ ENV/
 *.swp
 *.swo
 
-# Project specific
-chroma_db/
+# Streamlit
 .streamlit/
-uploaded_files/
 
-# System
+# OS
 .DS_Store
 Thumbs.db
+
+# Project specific
+*.pdf
+*.docx
+*.pptx
+*.ppt
+faiss_index/
