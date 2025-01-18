@@ -149,3 +149,84 @@ class DocumentManager:
             return {"error": f"Error processing question: {str(e)}"}
 
 # Main function remains the same
+
+def main():
+    st.set_page_config(page_title="Document QA Assistant", page_icon="📚")
+    st.title("Document QA Assistant 🤖")
+
+    # Initialize session state
+    if 'manager' not in st.session_state:
+        st.session_state.manager = None
+    if 'system_ready' not in st.session_state:
+        st.session_state.system_ready = False
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+
+    # Get API key from environment variable or sidebar
+    api_key = os.getenv('GOOGLE_API_KEY') or st.sidebar.text_input("Enter Google API Key", type="password")
+    if api_key:
+        os.environ["GOOGLE_API_KEY"] = api_key
+        genai.configure(api_key=api_key)
+    
+    # File upload
+    st.sidebar.header("Upload Documents")
+    uploaded_files = st.sidebar.file_uploader(
+        "Upload your documents",
+        type=['pdf', 'docx', 'pptx', 'ppt'],
+        accept_multiple_files=True
+    )
+
+    if uploaded_files and api_key and st.sidebar.button("Process Documents"):
+        with st.spinner("Processing documents..."):
+            manager = DocumentManager()
+            if manager.setup_qa_system(uploaded_files):
+                st.session_state.manager = manager
+                st.session_state.system_ready = True
+                st.sidebar.success("Ready to answer questions!")
+            else:
+                st.sidebar.error("Setup failed. Please try again.")
+
+    # Chat interface
+    if st.session_state.system_ready:
+        if st.session_state.manager.processed_files:
+            with st.expander("Processed Files"):
+                for file in st.session_state.manager.processed_files:
+                    st.text(f"✓ {file}")
+
+        # Display chat history
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+                if "sources" in message:
+                    st.markdown("**Sources:**")
+                    for source in message["sources"]:
+                        st.markdown(f"- {source}")
+
+        # Chat input
+        if prompt := st.chat_input("Ask a question about your documents"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.write(prompt)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    response = st.session_state.manager.ask_question(prompt)
+                    if "error" in response:
+                        st.error(response["error"])
+                    else:
+                        st.write(response["answer"])
+                        if response["sources"]:
+                            st.markdown("**Sources:**")
+                            for source in response["sources"]:
+                                st.markdown(f"- {source}")
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response["answer"],
+                            "sources": response["sources"]
+                        })
+    else:
+        st.info("Upload your documents and provide API key to begin.")
+
+if __name__ == "__main__":
+    main()
