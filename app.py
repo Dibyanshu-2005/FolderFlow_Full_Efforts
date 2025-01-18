@@ -9,6 +9,21 @@ from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
 from pathlib import Path
 import shutil
+import nltk
+import docx2txt
+
+# Download required NLTK data
+@st.cache_resource
+def download_nltk_data():
+    try:
+        nltk.download('punkt')
+        nltk.download('averaged_perceptron_tagger')
+        nltk.download('punkt_tab')
+    except Exception as e:
+        st.warning(f"NLTK Download Warning: {str(e)}")
+
+# Call the download function
+download_nltk_data()
 
 class DocumentManager:
     def __init__(self, upload_dir: str):
@@ -28,7 +43,13 @@ class DocumentManager:
             if file_path.endswith('.pdf'):
                 loader = PyPDFLoader(file_path)
             elif file_path.endswith('.docx'):
-                loader = Docx2txtLoader(file_path)
+                # First try Docx2txtLoader, fallback to direct docx2txt
+                try:
+                    loader = Docx2txtLoader(file_path)
+                except Exception as e:
+                    st.warning(f"Falling back to direct docx2txt for {file_path}")
+                    text = docx2txt.process(file_path)
+                    return [{"page_content": text, "metadata": {"source": file_path}}]
             elif file_path.endswith(('.pptx', '.ppt')):
                 loader = UnstructuredPowerPointLoader(file_path)
             else:
