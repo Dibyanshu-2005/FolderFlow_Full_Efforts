@@ -10,3 +10,5 @@ google-generativeai>=0.3.0
 python-dotenv>=1.0.0
 typing>=3.7.4
 docx2txt>=0.8
+protobuf>=4.25.1
+watchdog>=3.0.0
