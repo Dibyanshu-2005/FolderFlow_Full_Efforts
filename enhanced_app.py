@@ -2,7 +2,7 @@ import os
 import tempfile
 from typing import List, Dict, Any
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
@@ -27,18 +27,18 @@ class DocumentManager:
             if file_path.endswith('.pdf'):
                 loader = PyPDFLoader(file_path)
             elif file_path.endswith('.docx'):
-                loader = UnstructuredWordDocumentLoader(file_path)
+                loader = Docx2txtLoader(file_path)  # Using original working loader
             elif file_path.endswith(('.pptx', '.ppt')):
                 loader = UnstructuredPowerPointLoader(file_path)
             else:
                 return []
                 
             documents = loader.load()
-            progress_bar.progress(0.5)  # Update progress
+            progress_bar.progress(0.5)
             
             chunks = self.text_splitter.split_documents(documents)
             self.processed_files.append(os.path.basename(file_path))
-            progress_bar.progress(1.0)  # Complete progress
+            progress_bar.progress(1.0)
             
             return chunks
         except Exception as e:
@@ -62,13 +62,9 @@ class DocumentManager:
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getvalue())
                 
-                try:
-                    # Process the file
-                    chunks = self.process_file(temp_path, progress_bars[uploaded_file.name])
-                    all_chunks.extend(chunks)
-                except Exception as e:
-                    st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-                    continue  # Continue with next file even if this one fails
+                # Process the file
+                chunks = self.process_file(temp_path, progress_bars[uploaded_file.name])
+                all_chunks.extend(chunks)
             
             if not all_chunks:
                 st.error("No documents were successfully processed!")
@@ -77,16 +73,15 @@ class DocumentManager:
             status_text.text("Initializing embeddings...")
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             
+            # Create vector store in temporary directory
+            persist_directory = os.path.join(self.temp_dir, 'chroma_db')
+            os.makedirs(persist_directory, exist_ok=True)
+            
             status_text.text("Creating vector store...")
-            try:
-                # Use in-memory storage instead of persistent storage
-                vectorstore = Chroma.from_documents(
-                    documents=all_chunks,
-                    embedding=embeddings
-                )
-            except Exception as e:
-                st.error(f"Error creating vector store: {str(e)}")
-                return False
+            vectorstore = Chroma.from_documents(
+                documents=all_chunks,
+                embedding=embeddings
+            )
             
             status_text.text("Setting up QA chain...")
             self.qa_chain = ConversationalRetrievalChain.from_llm(
@@ -101,6 +96,7 @@ class DocumentManager:
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
             return False
+
     def ask_question(self, question: str) -> Dict:
         """Ask a question and get a response with source information"""
         if not self.qa_chain:
@@ -179,8 +175,9 @@ def main():
                 st.write(message["content"])
                 if "sources" in message:
                     st.markdown("**Sources:**")
-                    for source in message["sources"]:
-                        st.markdown(f"- {os.path.basename(source)}")
+                    unique_sources = {os.path.basename(source) for source in message["sources"]}
+                    for source in unique_sources:
+                        st.markdown(f"- {source}")
 
         # Chat input
         if prompt := st.chat_input("Your question"):
@@ -201,8 +198,9 @@ def main():
                         st.write(response["answer"])
                         if response["sources"]:
                             st.markdown("**Sources:**")
-                            for source in response["sources"]:
-                                st.markdown(f"- {os.path.basename(source)}")
+                            unique_sources = {os.path.basename(source) for source in response["sources"]}
+                            for source in unique_sources:
+                                st.markdown(f"- {source}")
                         
                         # Add assistant response to chat history
                         st.session_state.messages.append({
