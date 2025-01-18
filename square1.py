@@ -8,6 +8,19 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
+import nltk
+import os
+import streamlit as st
+
+# Add this at the start of your script, before the DocumentManager class
+try:
+    nltk.download('punkt')
+    nltk.download('punkt_tab')
+    nltk.download('averaged_perceptron_tagger')
+    nltk.download('maxent_ne_chunker')
+    nltk.download('words')
+except Exception as e:
+    st.warning(f"Warning: Could not download NLTK data: {str(e)}")
 
 class DocumentManager:
     def __init__(self):
