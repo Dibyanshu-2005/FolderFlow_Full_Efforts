@@ -1,7 +1,7 @@
 import os
 from typing import List, Dict, Any
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
@@ -9,21 +9,44 @@ from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
 from pathlib import Path
 import shutil
-import nltk
 import docx2txt
+from pptx import Presentation
+import sqlite3
 
-# Download required NLTK data
-@st.cache_resource
-def download_nltk_data():
+def check_sqlite_version():
+    """Check if SQLite version meets Chroma requirements"""
+    sqlite_version = sqlite3.sqlite_version_info
+    required_version = (3, 35, 0)
+    
+    if sqlite_version < required_version:
+        st.error(f"""
+        Your system has SQLite version {'.'.join(map(str, sqlite_version))}
+        Chroma requires SQLite ≥ 3.35.0
+        Please upgrade SQLite or use a different environment.
+        Visit https://docs.trychroma.com/troubleshooting#sqlite for more information.
+        """)
+        return False
+    return True
+
+def extract_text_from_pptx(file_path: str) -> str:
+    """Manually extract text from PowerPoint files"""
     try:
-        nltk.download('punkt')
-        nltk.download('averaged_perceptron_tagger')
-        nltk.download('punkt_tab')
-    except Exception as e:
-        st.warning(f"NLTK Download Warning: {str(e)}")
+        prs = Presentation(file_path)
+        text_content = []
 
-# Call the download function
-download_nltk_data()
+        for slide in prs.slides:
+            slide_text = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    slide_text.append(shape.text.strip())
+            
+            if slide_text:
+                text_content.append("\n".join(slide_text))
+
+        return "\n\n".join(text_content)
+    except Exception as e:
+        st.error(f"Error processing PowerPoint file: {str(e)}")
+        return ""
 
 class DocumentManager:
     def __init__(self, upload_dir: str):
@@ -37,27 +60,37 @@ class DocumentManager:
         self.qa_chain = None
         self.chat_history = []
 
-    def process_file(self, file_path: str) -> List[str]:
+    def process_file(self, file_path: str) -> List[Dict]:
         """Process a single file and return its chunks"""
         try:
             if file_path.endswith('.pdf'):
                 loader = PyPDFLoader(file_path)
+                documents = loader.load()
+                chunks = self.text_splitter.split_documents(documents)
+                return chunks
+            
             elif file_path.endswith('.docx'):
-                # First try Docx2txtLoader, fallback to direct docx2txt
-                try:
-                    loader = Docx2txtLoader(file_path)
-                except Exception as e:
-                    st.warning(f"Falling back to direct docx2txt for {file_path}")
-                    text = docx2txt.process(file_path)
-                    return [{"page_content": text, "metadata": {"source": file_path}}]
+                text = docx2txt.process(file_path)
+                if not text:
+                    st.warning(f"No text content found in {file_path}")
+                    return []
+                
+                chunks = self.text_splitter.create_documents([text], metadatas=[{"source": file_path}])
+                return chunks
+            
             elif file_path.endswith(('.pptx', '.ppt')):
-                loader = UnstructuredPowerPointLoader(file_path)
+                text = extract_text_from_pptx(file_path)
+                if not text:
+                    st.warning(f"No text content found in {file_path}")
+                    return []
+                
+                chunks = self.text_splitter.create_documents([text], metadatas=[{"source": file_path}])
+                return chunks
+            
             else:
                 st.error(f"Unsupported file type: {file_path}")
                 return []
             
-            documents = loader.load()
-            chunks = self.text_splitter.split_documents(documents)
             self.processed_files.append(file_path)
             return chunks
         except Exception as e:
@@ -67,6 +100,10 @@ class DocumentManager:
     def setup_qa_system(self, api_key: str):
         """Initialize the QA system with processed documents"""
         try:
+            # Check SQLite version first
+            if not check_sqlite_version():
+                return False
+
             # Configure API
             os.environ["GOOGLE_API_KEY"] = api_key
             genai.configure(api_key=api_key)
@@ -77,28 +114,35 @@ class DocumentManager:
                     if file.endswith(('.pdf', '.docx', '.pptx', '.ppt')):
                         file_path = os.path.join(root, file)
                         chunks = self.process_file(file_path)
-                        all_chunks.extend(chunks)
+                        if chunks:
+                            all_chunks.extend(chunks)
+                            self.processed_files.append(file_path)
 
             if not all_chunks:
                 st.error("No documents were successfully processed!")
                 return False
 
-            embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-            persist_directory = os.path.join(os.path.dirname(self.upload_dir), 'chroma_db')
-            os.makedirs(persist_directory, exist_ok=True)
+            try:
+                embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+                persist_directory = os.path.join(os.path.dirname(self.upload_dir), 'chroma_db')
+                os.makedirs(persist_directory, exist_ok=True)
 
-            vectorstore = Chroma.from_documents(
-                documents=all_chunks,
-                embedding=embeddings,
-                persist_directory=persist_directory
-            )
+                vectorstore = Chroma.from_documents(
+                    documents=all_chunks,
+                    embedding=embeddings,
+                    persist_directory=persist_directory
+                )
 
-            self.qa_chain = ConversationalRetrievalChain.from_llm(
-                ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
-                vectorstore.as_retriever(),
-                return_source_documents=True
-            )
-            return True
+                self.qa_chain = ConversationalRetrievalChain.from_llm(
+                    ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
+                    vectorstore.as_retriever(),
+                    return_source_documents=True
+                )
+                return True
+            except Exception as e:
+                st.error(f"Error with vector database: {str(e)}")
+                return False
+
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
             return False
@@ -128,13 +172,11 @@ class DocumentManager:
 
 def save_uploaded_files(uploaded_files):
     """Save uploaded files to a temporary directory"""
-    # Create upload directory if it doesn't exist
     upload_dir = Path("uploaded_files")
     if upload_dir.exists():
         shutil.rmtree(upload_dir)
     upload_dir.mkdir(exist_ok=True)
     
-    # Save uploaded files
     for uploaded_file in uploaded_files:
         file_path = upload_dir / uploaded_file.name
         with open(file_path, "wb") as f:
@@ -178,7 +220,6 @@ def main():
             return
 
         with st.spinner("Setting up the document management system..."):
-            # Save uploaded files and create manager
             upload_dir = save_uploaded_files(uploaded_files)
             manager = DocumentManager(upload_dir)
             
