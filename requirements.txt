@@ -7,3 +7,4 @@ chromadb
 python-docx
 pypdf
 python-pptx
+docx2txt
