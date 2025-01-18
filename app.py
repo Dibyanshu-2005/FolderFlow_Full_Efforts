@@ -1,40 +1,43 @@
+# app.py
+
 import os
+import tempfile
 from typing import List, Dict, Any
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
-from pathlib import Path
-import shutil
-import docx2txt
 from pptx import Presentation
+import docx2txt
 
-def extract_text_from_pptx(file_path: str) -> str:
-    """Manually extract text from PowerPoint files"""
-    try:
-        prs = Presentation(file_path)
+class PowerPointLoader:
+    """Custom PowerPoint loader that extracts text without relying on unstructured"""
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+
+    def load(self) -> List[Dict[str, Any]]:
+        prs = Presentation(self.file_path)
         text_content = []
-
+        
         for slide in prs.slides:
             slide_text = []
             for shape in slide.shapes:
                 if hasattr(shape, "text"):
-                    slide_text.append(shape.text.strip())
+                    slide_text.append(shape.text)
             
             if slide_text:
-                text_content.append("\n".join(slide_text))
-
-        return "\n\n".join(text_content)
-    except Exception as e:
-        st.error(f"Error processing PowerPoint file: {str(e)}")
-        return ""
+                text_content.append({
+                    "page_content": "\n".join(slide_text),
+                    "metadata": {"source": self.file_path}
+                })
+        
+        return text_content
 
 class DocumentManager:
-    def __init__(self, upload_dir: str):
-        self.upload_dir = upload_dir
+    def __init__(self):
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
@@ -43,86 +46,66 @@ class DocumentManager:
         self.processed_files = []
         self.qa_chain = None
         self.chat_history = []
-
-    def process_file(self, file_path: str) -> List[Dict]:
-        """Process a single file and return its chunks"""
+        
+    def process_file(self, uploaded_file) -> List[Dict[str, Any]]:
+        """Process a single uploaded file and return its chunks"""
         try:
-            if file_path.endswith('.pdf'):
+            # Create a temporary file to store the uploaded content
+            with tempfile.NamedTemporaryFile(delete=False, suffix=uploaded_file.name) as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                file_path = tmp_file.name
+
+            if uploaded_file.name.endswith('.pdf'):
                 loader = PyPDFLoader(file_path)
                 documents = loader.load()
-                chunks = self.text_splitter.split_documents(documents)
-                return chunks
-            
-            elif file_path.endswith('.docx'):
+            elif uploaded_file.name.endswith('.docx'):
                 text = docx2txt.process(file_path)
-                if not text:
-                    st.warning(f"No text content found in {file_path}")
-                    return []
-                
-                chunks = self.text_splitter.create_documents([text], metadatas=[{"source": file_path}])
-                return chunks
-            
-            elif file_path.endswith(('.pptx', '.ppt')):
-                text = extract_text_from_pptx(file_path)
-                if not text:
-                    st.warning(f"No text content found in {file_path}")
-                    return []
-                
-                chunks = self.text_splitter.create_documents([text], metadatas=[{"source": file_path}])
-                return chunks
-            
+                documents = [{
+                    "page_content": text,
+                    "metadata": {"source": uploaded_file.name}
+                }]
+            elif uploaded_file.name.endswith(('.pptx', '.ppt')):
+                loader = PowerPointLoader(file_path)
+                documents = loader.load()
             else:
-                st.error(f"Unsupported file type: {file_path}")
+                st.error(f"Unsupported file type: {uploaded_file.name}")
                 return []
+
+            chunks = self.text_splitter.create_documents(
+                texts=[doc["page_content"] for doc in documents],
+                metadatas=[doc["metadata"] for doc in documents]
+            )
             
-            self.processed_files.append(file_path)
+            self.processed_files.append(uploaded_file.name)
+            os.unlink(file_path)  # Clean up temporary file
             return chunks
         except Exception as e:
-            st.error(f"Error processing {file_path}: {str(e)}")
+            st.error(f"Error processing {uploaded_file.name}: {str(e)}")
             return []
 
-    def setup_qa_system(self, api_key: str):
-        """Initialize the QA system with processed documents"""
+    def setup_qa_system(self, files) -> bool:
+        """Initialize the QA system with uploaded documents"""
         try:
-            # Configure API
-            os.environ["GOOGLE_API_KEY"] = api_key
-            genai.configure(api_key=api_key)
-
             all_chunks = []
-            for root, _, files in os.walk(self.upload_dir):
-                for file in files:
-                    if file.endswith(('.pdf', '.docx', '.pptx', '.ppt')):
-                        file_path = os.path.join(root, file)
-                        chunks = self.process_file(file_path)
-                        if chunks:
-                            all_chunks.extend(chunks)
-                            self.processed_files.append(file_path)
+            for file in files:
+                chunks = self.process_file(file)
+                all_chunks.extend(chunks)
 
             if not all_chunks:
                 st.error("No documents were successfully processed!")
                 return False
 
-            try:
-                embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-                
-                # Create FAISS index directory
-                index_dir = os.path.join(os.path.dirname(self.upload_dir), 'faiss_index')
-                os.makedirs(index_dir, exist_ok=True)
-
-                # Create and save FAISS index
-                vectorstore = FAISS.from_documents(all_chunks, embeddings)
-                vectorstore.save_local(index_dir)
-
-                self.qa_chain = ConversationalRetrievalChain.from_llm(
-                    ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
-                    vectorstore.as_retriever(),
-                    return_source_documents=True
-                )
-                return True
-            except Exception as e:
-                st.error(f"Error with vector database: {str(e)}")
-                return False
-
+            embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+            
+            # Use FAISS instead of Chroma
+            vectorstore = FAISS.from_documents(all_chunks, embeddings)
+            
+            self.qa_chain = ConversationalRetrievalChain.from_llm(
+                ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
+                vectorstore.as_retriever(),
+                return_source_documents=True
+            )
+            return True
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
             return False
@@ -130,7 +113,7 @@ class DocumentManager:
     def ask_question(self, question: str) -> Dict:
         """Ask a question and get a response with source information"""
         if not self.qa_chain:
-            return {"error": "QA system not initialized. Please set up the system first."}
+            return {"error": "QA system not initialized. Please upload documents first."}
         try:
             result = self.qa_chain.invoke({
                 "question": question,
@@ -150,76 +133,57 @@ class DocumentManager:
         except Exception as e:
             return {"error": f"Error processing question: {str(e)}"}
 
-def save_uploaded_files(uploaded_files):
-    """Save uploaded files to a temporary directory"""
-    upload_dir = Path("uploaded_files")
-    if upload_dir.exists():
-        shutil.rmtree(upload_dir)
-    upload_dir.mkdir(exist_ok=True)
-    
-    for uploaded_file in uploaded_files:
-        file_path = upload_dir / uploaded_file.name
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getvalue())
-    
-    return str(upload_dir)
-
 def main():
-    st.set_page_config(page_title="Document Assistant", page_icon="📚")
-    st.title("Document Assistant 🤖")
+    st.set_page_config(page_title="Document QA Assistant", page_icon="📚")
+    st.title("Document QA Assistant 🤖")
 
-    # Initialize session state variables
+    # Initialize session state
     if 'manager' not in st.session_state:
-        st.session_state.manager = None
-    if 'system_ready' not in st.session_state:
-        st.session_state.system_ready = False
+        st.session_state.manager = DocumentManager()
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = ""
     if 'messages' not in st.session_state:
         st.session_state.messages = []
 
-    # Sidebar for configuration
-    st.sidebar.header("Configuration")
-    
-    # API Key input
-    api_key = st.sidebar.text_input("Enter Google AI API Key", type="password")
-    
-    # File upload
-    st.sidebar.header("Upload Documents")
-    uploaded_files = st.sidebar.file_uploader(
+    # API Key input in sidebar
+    with st.sidebar:
+        st.header("Configuration")
+        api_key = st.text_input(
+            "Enter your Google API Key",
+            value=st.session_state.api_key,
+            type="password"
+        )
+        if api_key:
+            st.session_state.api_key = api_key
+            os.environ["GOOGLE_API_KEY"] = api_key
+            genai.configure(api_key=api_key)
+
+    # File upload section
+    st.header("Upload Documents")
+    uploaded_files = st.file_uploader(
         "Drag and drop your documents here",
         accept_multiple_files=True,
         type=['pdf', 'docx', 'pptx', 'ppt']
     )
 
-    # Initialize button
-    if st.sidebar.button("Initialize System"):
-        if not api_key:
-            st.sidebar.error("Please enter your API key.")
-            return
-        if not uploaded_files:
-            st.sidebar.error("Please upload at least one document.")
-            return
+    # Initialize system button
+    if uploaded_files and st.session_state.api_key:
+        if st.button("Process Documents"):
+            with st.spinner("Processing documents..."):
+                if st.session_state.manager.setup_qa_system(uploaded_files):
+                    st.success("Documents processed successfully!")
+                else:
+                    st.error("Failed to process documents.")
 
-        with st.spinner("Setting up the document management system..."):
-            upload_dir = save_uploaded_files(uploaded_files)
-            manager = DocumentManager(upload_dir)
-            
-            if manager.setup_qa_system(api_key):
-                st.session_state.manager = manager
-                st.session_state.system_ready = True
-                st.sidebar.success("System initialized successfully!")
-            else:
-                st.sidebar.error("Failed to initialize the system. Please check your API key and documents.")
+    # Display processed files
+    if st.session_state.manager.processed_files:
+        with st.expander("Processed Files"):
+            for file in st.session_state.manager.processed_files:
+                st.text(f"✓ {file}")
 
-    # Main chat interface
-    if st.session_state.system_ready:
-        # Display processed files
-        if st.session_state.manager.processed_files:
-            with st.expander("Processed Files"):
-                for file in st.session_state.manager.processed_files:
-                    st.text(f"✓ {os.path.basename(file)}")
-
-        # Chat interface
-        st.markdown("### Ask me anything about your documents!")
+    # Chat interface
+    if st.session_state.manager.qa_chain:
+        st.header("Ask Questions")
         
         # Display chat messages
         for message in st.session_state.messages:
@@ -227,20 +191,15 @@ def main():
                 st.write(message["content"])
                 if "sources" in message:
                     st.markdown("**Sources:**")
-                    unique_sources = {os.path.basename(source) for source in message["sources"]}
-                    for source in unique_sources:
+                    for source in message["sources"]:
                         st.markdown(f"- {source}")
 
         # Chat input
-        if prompt := st.chat_input("Your question"):
-            # Add user message to chat history
+        if prompt := st.chat_input("Ask a question about your documents"):
             st.session_state.messages.append({"role": "user", "content": prompt})
-            
-            # Display user message
             with st.chat_message("user"):
                 st.write(prompt)
 
-            # Generate and display assistant response
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
                     response = st.session_state.manager.ask_question(prompt)
@@ -250,18 +209,15 @@ def main():
                         st.write(response["answer"])
                         if response["sources"]:
                             st.markdown("**Sources:**")
-                            unique_sources = {os.path.basename(source) for source in response["sources"]}
-                            for source in unique_sources:
+                            for source in response["sources"]:
                                 st.markdown(f"- {source}")
-                        
-                        # Add assistant response to chat history
                         st.session_state.messages.append({
                             "role": "assistant",
                             "content": response["answer"],
                             "sources": response["sources"]
                         })
     else:
-        st.info("Please enter your API key and upload documents using the sidebar controls.")
+        st.info("Please upload documents and provide an API key to start.")
 
 if __name__ == "__main__":
     main()
