@@ -9,3 +9,4 @@ unstructured
 pypdf
 python-pptx
 nltk
+protobuf
