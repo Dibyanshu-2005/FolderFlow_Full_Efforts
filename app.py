@@ -1,11 +1,11 @@
-import streamlit as st
-import tempfile
 import os
+import tempfile
 from typing import List, Dict
+import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 from langchain.schema import Document
 import google.generativeai as genai
@@ -22,14 +22,37 @@ class CustomPPTLoader:
             
             for slide_num, slide in enumerate(prs.slides, 1):
                 text_content = []
+                
+                # Extract text from all possible shape types
                 for shape in slide.shapes:
+                    # Text from text boxes and other shapes with text
                     if hasattr(shape, "text") and shape.text.strip():
                         text_content.append(shape.text.strip())
+                    
+                    # Text from tables
+                    if shape.has_table:
+                        table_text = []
+                        for row in shape.table.rows:
+                            row_text = []
+                            for cell in row.cells:
+                                if cell.text.strip():
+                                    row_text.append(cell.text.strip())
+                            if row_text:
+                                table_text.append(" | ".join(row_text))
+                        if table_text:
+                            text_content.append("\n".join(table_text))
                 
+                # Only create a document if there's actual content
                 if text_content:
                     text = "\n\n".join(text_content)
-                    metadata = {"source": self.file_path, "slide_number": slide_num}
-                    documents.append(Document(page_content=text, metadata=metadata))
+                    metadata = {
+                        "source": os.path.basename(self.file_path),
+                        "slide_number": slide_num
+                    }
+                    documents.append(Document(
+                        page_content=text,
+                        metadata=metadata
+                    ))
             
             return documents
         except Exception as e:
@@ -46,24 +69,25 @@ class DocumentManager:
         self.processed_files = []
         self.qa_chain = None
         self.chat_history = []
-
+        self.temp_dir = tempfile.mkdtemp()
+        
     def process_file(self, uploaded_file, progress_bar) -> List[Document]:
         try:
             # Create a temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                file_path = tmp_file.name
-
+            temp_path = os.path.join(self.temp_dir, uploaded_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
+            
             # Select appropriate loader
             if uploaded_file.name.endswith('.pdf'):
-                loader = PyPDFLoader(file_path)
+                loader = PyPDFLoader(temp_path)
             elif uploaded_file.name.endswith('.docx'):
-                loader = Docx2txtLoader(file_path)
+                loader = Docx2txtLoader(temp_path)
             elif uploaded_file.name.endswith(('.pptx', '.ppt')):
-                loader = CustomPPTLoader(file_path)
+                loader = CustomPPTLoader(temp_path)
             else:
                 return []
-
+            
             # Load and process document
             documents = loader.load()
             progress_bar.progress(0.5)
@@ -80,11 +104,10 @@ class DocumentManager:
             return []
         finally:
             # Clean up temporary file
-            if 'file_path' in locals():
-                try:
-                    os.unlink(file_path)
-                except:
-                    pass
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
 
     def setup_qa_system(self, uploaded_files):
         try:
@@ -101,16 +124,23 @@ class DocumentManager:
                 st.error("No documents were successfully processed!")
                 return False
 
+            status_text.text("Initializing embeddings...")
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             
-            # Using FAISS instead of Chroma
-            vectorstore = FAISS.from_documents(all_chunks, embeddings)
+            # Create vector store
+            vectorstore = Chroma.from_documents(
+                documents=all_chunks,
+                embedding=embeddings
+            )
             
+            status_text.text("Setting up QA chain...")
             self.qa_chain = ConversationalRetrievalChain.from_llm(
                 ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
                 vectorstore.as_retriever(),
                 return_source_documents=True
             )
+            
+            status_text.text("Setup complete!")
             return True
 
         except Exception as e:
@@ -127,7 +157,7 @@ class DocumentManager:
             })
             
             sources = list({
-                os.path.basename(doc.metadata.get('source', 'Unknown source'))
+                doc.metadata.get('source', 'Unknown source')
                 for doc in result["source_documents"]
             })
             
@@ -140,6 +170,10 @@ class DocumentManager:
             return {"error": f"Error processing question: {str(e)}"}
 
 def main():
+    # Clear session state if API key changes
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = None
+    
     st.set_page_config(page_title="Document QA Assistant", page_icon="📚")
     st.title("Document QA Assistant 🤖")
 
@@ -151,8 +185,16 @@ def main():
     if 'messages' not in st.session_state:
         st.session_state.messages = []
 
-    # Get API key from environment variable or sidebar
-    api_key = os.getenv('GOOGLE_API_KEY') or st.sidebar.text_input("Enter Google API Key", type="password")
+    # Get API key
+    api_key = st.sidebar.text_input("Enter Google API Key", type="password")
+    
+    # Reset session if API key changes
+    if api_key != st.session_state.api_key:
+        st.session_state.manager = None
+        st.session_state.system_ready = False
+        st.session_state.messages = []
+        st.session_state.api_key = api_key
+    
     if api_key:
         os.environ["GOOGLE_API_KEY"] = api_key
         genai.configure(api_key=api_key)
@@ -215,7 +257,7 @@ def main():
                             "sources": response["sources"]
                         })
     else:
-        st.info("Upload your documents and provide API key to begin.")
+        st.info("Please provide your API key and upload documents to begin.")
 
 if __name__ == "__main__":
     main()
