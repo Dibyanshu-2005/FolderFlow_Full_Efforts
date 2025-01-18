@@ -7,11 +7,12 @@ import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import FAISS
+from langchain.vectorstores import FAISS  # We'll still use FAISS but through a different package
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
 from pptx import Presentation
 import docx2txt
+import numpy as np
 
 class PowerPointLoader:
     """Custom PowerPoint loader that extracts text without relying on unstructured"""
@@ -97,16 +98,21 @@ class DocumentManager:
 
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             
-            # Use FAISS instead of Chroma
-            vectorstore = FAISS.from_documents(all_chunks, embeddings)
+            vectorstore = FAISS.from_documents(
+                all_chunks,
+                embeddings
+            )
             
             self.qa_chain = ConversationalRetrievalChain.from_llm(
                 ChatGoogleGenerativeAI(
                     model="gemini-1.5-flash",
                     temperature=0.7,
-                    convert_system_message_to_human=True  # Add this parameter
+                    convert_system_message_to_human=True
                 ),
-                vectorstore.as_retriever(),
+                vectorstore.as_retriever(
+                    search_type="similarity",
+                    search_kwargs={"k": 4}  # Adjust number of retrieved documents
+                ),
                 return_source_documents=True
             )
             return True
@@ -138,7 +144,12 @@ class DocumentManager:
             return {"error": f"Error processing question: {str(e)}"}
 
 def main():
-    st.set_page_config(page_title="Document QA Assistant", page_icon="📚")
+    st.set_page_config(
+        page_title="Document QA Assistant",
+        page_icon="📚",
+        layout="wide"
+    )
+    
     st.title("Document QA Assistant 🤖")
 
     # Initialize session state
@@ -149,8 +160,10 @@ def main():
     if 'messages' not in st.session_state:
         st.session_state.messages = []
 
-    # API Key input in sidebar
-    with st.sidebar:
+    # Two-column layout
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
         st.header("Configuration")
         api_key = st.text_input(
             "Enter your Google API Key",
@@ -162,66 +175,63 @@ def main():
             os.environ["GOOGLE_API_KEY"] = api_key
             genai.configure(api_key=api_key)
 
-    # File upload section
-    st.header("Upload Documents")
-    uploaded_files = st.file_uploader(
-        "Drag and drop your documents here",
-        accept_multiple_files=True,
-        type=['pdf', 'docx', 'pptx', 'ppt']
-    )
+        st.header("Upload Documents")
+        uploaded_files = st.file_uploader(
+            "Drag and drop your documents here",
+            accept_multiple_files=True,
+            type=['pdf', 'docx', 'pptx', 'ppt']
+        )
 
-    # Initialize system button
-    if uploaded_files and st.session_state.api_key:
-        if st.button("Process Documents"):
-            with st.spinner("Processing documents..."):
-                if st.session_state.manager.setup_qa_system(uploaded_files):
-                    st.success("Documents processed successfully!")
-                else:
-                    st.error("Failed to process documents.")
-
-    # Display processed files
-    if st.session_state.manager.processed_files:
-        with st.expander("Processed Files"):
-            for file in st.session_state.manager.processed_files:
-                st.text(f"✓ {file}")
-
-    # Chat interface
-    if st.session_state.manager.qa_chain:
-        st.header("Ask Questions")
-        
-        # Display chat messages
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
-                if "sources" in message:
-                    st.markdown("**Sources:**")
-                    for source in message["sources"]:
-                        st.markdown(f"- {source}")
-
-        # Chat input
-        if prompt := st.chat_input("Ask a question about your documents"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.write(prompt)
-
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    response = st.session_state.manager.ask_question(prompt)
-                    if "error" in response:
-                        st.error(response["error"])
+        if uploaded_files and st.session_state.api_key:
+            if st.button("Process Documents"):
+                with st.spinner("Processing documents..."):
+                    if st.session_state.manager.setup_qa_system(uploaded_files):
+                        st.success("Documents processed successfully!")
                     else:
-                        st.write(response["answer"])
-                        if response["sources"]:
-                            st.markdown("**Sources:**")
-                            for source in response["sources"]:
-                                st.markdown(f"- {source}")
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": response["answer"],
-                            "sources": response["sources"]
-                        })
-    else:
-        st.info("Please upload documents and provide an API key to start.")
+                        st.error("Failed to process documents.")
+
+        if st.session_state.manager.processed_files:
+            with st.expander("Processed Files"):
+                for file in st.session_state.manager.processed_files:
+                    st.text(f"✓ {file}")
+
+    with col2:
+        if st.session_state.manager.qa_chain:
+            st.header("Ask Questions")
+            
+            # Display chat messages
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.write(message["content"])
+                    if "sources" in message:
+                        st.markdown("**Sources:**")
+                        for source in message["sources"]:
+                            st.markdown(f"- {source}")
+
+            # Chat input
+            if prompt := st.chat_input("Ask a question about your documents"):
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.write(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        response = st.session_state.manager.ask_question(prompt)
+                        if "error" in response:
+                            st.error(response["error"])
+                        else:
+                            st.write(response["answer"])
+                            if response["sources"]:
+                                st.markdown("**Sources:**")
+                                for source in response["sources"]:
+                                    st.markdown(f"- {source}")
+                            st.session_state.messages.append({
+                                "role": "assistant",
+                                "content": response["answer"],
+                                "sources": response["sources"]
+                            })
+        else:
+            st.info("Please upload documents and provide an API key to start.")
 
 if __name__ == "__main__":
     main()
