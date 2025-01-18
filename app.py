@@ -101,7 +101,11 @@ class DocumentManager:
             vectorstore = FAISS.from_documents(all_chunks, embeddings)
             
             self.qa_chain = ConversationalRetrievalChain.from_llm(
-                ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
+                ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    temperature=0.7,
+                    convert_system_message_to_human=True  # Add this parameter
+                ),
                 vectorstore.as_retriever(),
                 return_source_documents=True
             )
