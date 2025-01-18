@@ -2,7 +2,7 @@ import os
 import tempfile
 from typing import List, Dict, Any
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, UnstructuredPowerPointLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import Chroma
@@ -27,7 +27,7 @@ class DocumentManager:
             if file_path.endswith('.pdf'):
                 loader = PyPDFLoader(file_path)
             elif file_path.endswith('.docx'):
-                loader = Docx2txtLoader(file_path)
+                loader = UnstructuredWordDocumentLoader(file_path)
             elif file_path.endswith(('.pptx', '.ppt')):
                 loader = UnstructuredPowerPointLoader(file_path)
             else:
