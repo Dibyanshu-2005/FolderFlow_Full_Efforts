@@ -5,7 +5,7 @@ from typing import List, Dict
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
 from langchain.chains import ConversationalRetrievalChain
 from langchain.schema import Document
 import google.generativeai as genai
@@ -102,7 +102,9 @@ class DocumentManager:
                 return False
 
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-            vectorstore = Chroma.from_documents(documents=all_chunks, embedding=embeddings)
+            
+            # Using FAISS instead of Chroma
+            vectorstore = FAISS.from_documents(all_chunks, embeddings)
             
             self.qa_chain = ConversationalRetrievalChain.from_llm(
                 ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7),
