@@ -1,5 +1,6 @@
 import os
 import tempfile
+import nltk
 from typing import List, Dict, Any
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredPowerPointLoader
@@ -8,6 +9,15 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGener
 from langchain_community.vectorstores import Chroma
 from langchain.chains import ConversationalRetrievalChain
 import google.generativeai as genai
+
+# Download required NLTK data at startup
+try:
+    nltk.download('punkt')
+    nltk.download('averaged_perceptron_tagger')
+    nltk.download('maxent_ne_chunker')
+    nltk.download('words')
+except Exception as e:
+    st.warning(f"Warning: Could not download NLTK data: {str(e)}")
 
 class DocumentManager:
     def __init__(self):
@@ -21,6 +31,7 @@ class DocumentManager:
         self.chat_history = []
         self.temp_dir = tempfile.mkdtemp()
         
+    # Rest of your DocumentManager class remains the same...
     def process_file(self, file_path: str, progress_bar) -> List[str]:
         """Process a single file and return its chunks"""
         try:
