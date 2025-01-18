@@ -170,3 +170,100 @@ class DocumentManager:
             return {"error": f"Error processing question: {str(e)}"}
 
 # Rest of your main() function remains the same...
+
+def main():
+    st.set_page_config(page_title="FolderFlow Document Assistant", page_icon="📚")
+    st.title("FolderFlow Document Assistant 🤖")
+
+    # Initialize session state variables
+    if 'manager' not in st.session_state:
+        st.session_state.manager = None
+    if 'system_ready' not in st.session_state:
+        st.session_state.system_ready = False
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+
+    # Configure Google API
+    api_key = st.sidebar.text_input("Enter Google API Key", type="password")
+    if api_key:
+        os.environ["GOOGLE_API_KEY"] = api_key
+        genai.configure(api_key=api_key)
+    else:
+        st.info("Please enter your Google API key in the sidebar to continue.")
+        return
+
+    # File upload section
+    st.sidebar.header("Upload Documents")
+    uploaded_files = st.sidebar.file_uploader(
+        "Drop your documents here or click to upload",
+        type=['pdf', 'docx', 'pptx', 'ppt'],
+        accept_multiple_files=True,
+        help="Supported formats: PDF, DOCX, PPTX, PPT"
+    )
+
+    # Initialize system button
+    if uploaded_files and st.sidebar.button("Process Documents"):
+        with st.spinner("Setting up the document management system..."):
+            manager = DocumentManager()
+            if manager.setup_qa_system(uploaded_files):
+                st.session_state.manager = manager
+                st.session_state.system_ready = True
+                st.sidebar.success("System initialized successfully!")
+            else:
+                st.sidebar.error("Failed to initialize the system. Please check your files.")
+
+    # Main chat interface
+    if st.session_state.system_ready:
+        # Display processed files
+        if st.session_state.manager.processed_files:
+            with st.expander("Processed Files"):
+                for file in st.session_state.manager.processed_files:
+                    st.text(f"✓ {file}")
+
+        # Chat interface
+        st.markdown("### Ask me anything about your documents!")
+        
+        # Display chat messages
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.write(message["content"])
+                if "sources" in message:
+                    st.markdown("**Sources:**")
+                    unique_sources = {os.path.basename(source) for source in message["sources"]}
+                    for source in unique_sources:
+                        st.markdown(f"- {source}")
+
+        # Chat input
+        if prompt := st.chat_input("Your question"):
+            # Add user message to chat history
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            
+            # Display user message
+            with st.chat_message("user"):
+                st.write(prompt)
+
+            # Generate and display assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    response = st.session_state.manager.ask_question(prompt)
+                    if "error" in response:
+                        st.error(response["error"])
+                    else:
+                        st.write(response["answer"])
+                        if response["sources"]:
+                            st.markdown("**Sources:**")
+                            unique_sources = {os.path.basename(source) for source in response["sources"]}
+                            for source in unique_sources:
+                                st.markdown(f"- {source}")
+                        
+                        # Add assistant response to chat history
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response["answer"],
+                            "sources": response["sources"]
+                        })
+    else:
+        st.info("Please upload your documents and initialize the system using the sidebar controls.")
+
+if __name__ == "__main__":
+    main()
