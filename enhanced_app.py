@@ -62,9 +62,13 @@ class DocumentManager:
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getvalue())
                 
-                # Process the file
-                chunks = self.process_file(temp_path, progress_bars[uploaded_file.name])
-                all_chunks.extend(chunks)
+                try:
+                    # Process the file
+                    chunks = self.process_file(temp_path, progress_bars[uploaded_file.name])
+                    all_chunks.extend(chunks)
+                except Exception as e:
+                    st.error(f"Error processing {uploaded_file.name}: {str(e)}")
+                    continue  # Continue with next file even if this one fails
             
             if not all_chunks:
                 st.error("No documents were successfully processed!")
@@ -73,16 +77,16 @@ class DocumentManager:
             status_text.text("Initializing embeddings...")
             embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
             
-            # Create vector store in temporary directory
-            persist_directory = os.path.join(self.temp_dir, 'chroma_db')
-            os.makedirs(persist_directory, exist_ok=True)
-            
             status_text.text("Creating vector store...")
-            vectorstore = Chroma.from_documents(
-                documents=all_chunks,
-                embedding=embeddings,
-                persist_directory=persist_directory
-            )
+            try:
+                # Use in-memory storage instead of persistent storage
+                vectorstore = Chroma.from_documents(
+                    documents=all_chunks,
+                    embedding=embeddings
+                )
+            except Exception as e:
+                st.error(f"Error creating vector store: {str(e)}")
+                return False
             
             status_text.text("Setting up QA chain...")
             self.qa_chain = ConversationalRetrievalChain.from_llm(
@@ -97,7 +101,6 @@ class DocumentManager:
         except Exception as e:
             st.error(f"Error setting up QA system: {str(e)}")
             return False
-
     def ask_question(self, question: str) -> Dict:
         """Ask a question and get a response with source information"""
         if not self.qa_chain:
